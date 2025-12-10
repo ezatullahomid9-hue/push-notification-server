@@ -22,11 +22,11 @@ app.use(express.json());
 // Test route
 // --------------------------------------
 app.get("/", (req, res) => {
-  res.send("Push Notification Server is running ✔");
+  res.send("Expo Push Notification Server is running ✔");
 });
 
 // --------------------------------------
-// Save device token (multi-device support)
+// Save Expo push token (multi-device support)
 // --------------------------------------
 app.post("/save-token", async (req, res) => {
   try {
@@ -51,108 +51,82 @@ app.post("/save-token", async (req, res) => {
 });
 
 // --------------------------------------
-// Send notification directly to ONE token
+// Send notification to a single Expo token
 // --------------------------------------
 app.post("/send-notification", async (req, res) => {
   try {
-    const { title, body, token, data } = req.body;
+    const { title, body, token } = req.body;
 
     if (!title || !body || !token) {
       return res.status(400).json({ error: "title, body and token are required" });
     }
 
-    const message = {
-      notification: { title, body },
-      token,
-      data: data || {},
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: token,
+        sound: "default",
+        title,
+        body,
+      }),
+    });
 
-      android: {
-        priority: "high",
-        notification: { sound: "default" },
-      },
-
-      apns: {
-        payload: { aps: { sound: "default", contentAvailable: true } },
-      },
-    };
-
-    const response = await admin.messaging().send(message);
-
-    res.json({ success: true, response });
+    const result = await response.json();
+    res.json({ success: true, result });
   } catch (err) {
-    console.error("Error sending notification:", err);
-    res.status(500).json({ error: "notification send error" });
+    console.error("Expo Push Error:", err);
+    res.status(500).json({ error: "failed to send expo notification" });
   }
 });
 
 // --------------------------------------
-// Send notification to USER (all devices)
+// Send notification to all devices of a user
 // --------------------------------------
 app.post("/send-to-user", async (req, res) => {
   try {
-    const { userId, title, body, data } = req.body;
+    const { userId, title, body } = req.body;
 
     if (!userId || !title || !body) {
       return res.status(400).json({ error: "userId, title, body are required" });
     }
 
-    // Get user tokens
     const userDoc = await db.collection("deviceTokens").doc(userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "No tokens found for this user" });
-    }
+    if (!userDoc.exists) return res.status(404).json({ error: "No tokens found for this user" });
 
     const tokens = userDoc.data().tokens || [];
+    if (tokens.length === 0) return res.status(404).json({ error: "User has no registered devices" });
 
-    if (tokens.length === 0) {
-      return res.status(404).json({ error: "User has no registered devices" });
-    }
-
+    const results = [];
     const invalidTokens = [];
 
     for (const token of tokens) {
       try {
-        await admin.messaging().send({
-          notification: { title, body },
-          token,
-          data: data || {},
-
-          android: {
-            priority: "high",
-            notification: { sound: "default" },
-          },
-
-          apns: {
-            payload: { aps: { sound: "default", contentAvailable: true } },
-          },
+        const response = await fetch("https://exp.host/--/api/v2/push/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: token, sound: "default", title, body }),
         });
+        const result = await response.json();
+        results.push(result);
+
+        // Remove invalid Expo tokens automatically
+        if (result.data && result.data.status === "error") invalidTokens.push(token);
       } catch (err) {
         console.error("Error sending to token:", token, err);
-
-        // Track invalid tokens for cleanup
-        if (
-          err.errorInfo &&
-          (err.errorInfo.code === "messaging/invalid-registration-token" ||
-            err.errorInfo.code === "messaging/registration-token-not-registered")
-        ) {
-          invalidTokens.push(token);
-        }
+        invalidTokens.push(token);
       }
     }
 
-    // Remove invalid tokens
     if (invalidTokens.length > 0) {
       await db
         .collection("deviceTokens")
         .doc(userId)
-        .update({
-          tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
-        });
-
+        .update({ tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens) });
       console.log("Removed invalid tokens:", invalidTokens);
     }
 
-    res.json({ success: true, sentTo: tokens.length, removed: invalidTokens.length });
+    res.json({ success: true, sentTo: tokens.length, removed: invalidTokens.length, results });
   } catch (err) {
     console.error("Error sending to user:", err);
     res.status(500).json({ error: "error sending notification to user" });
