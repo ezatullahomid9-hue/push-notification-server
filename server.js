@@ -19,6 +19,13 @@ app.use(cors());
 app.use(express.json());
 
 // --------------------------------------
+// Health check route (keep server awake)
+// --------------------------------------
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// --------------------------------------
 // Test route
 // --------------------------------------
 app.get("/", (req, res) => {
@@ -120,7 +127,6 @@ app.post("/send-to-user", async (req, res) => {
             body: JSON.stringify({ to: token, sound: "default", title, body }),
           });
           const result = await response.json();
-          // Remove invalid tokens
           if (result.data && result.data.status === "error") invalidTokens.push(token);
         } catch (err) {
           console.error("Error sending to token:", token, err);
