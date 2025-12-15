@@ -3,9 +3,9 @@ import cors from "cors";
 import fetch from "node-fetch";
 import admin from "firebase-admin";
 
-// --------------------------------------
-// Firebase Admin Init
-// --------------------------------------
+/* --------------------------------------
+   Firebase Admin Init
+-------------------------------------- */
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
 admin.initializeApp({
@@ -15,30 +15,27 @@ admin.initializeApp({
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 
-// --------------------------------------
-// App Setup
-// --------------------------------------
+/* --------------------------------------
+   App Setup
+-------------------------------------- */
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --------------------------------------
-// Health check (keep server awake)
-// --------------------------------------
-app.get("/health", (req, res) => {
+/* --------------------------------------
+   Health Check
+-------------------------------------- */
+app.get("/health", (_, res) => {
   res.status(200).send("OK");
 });
 
-// --------------------------------------
-// Root test route
-// --------------------------------------
-app.get("/", (req, res) => {
-  res.send("Expo Push Notification Server is running ✔");
+app.get("/", (_, res) => {
+  res.send("Expo Push Notification Server Running ✔");
 });
 
-// --------------------------------------
-// Save Expo Push Token (multi-device)
-// --------------------------------------
+/* --------------------------------------
+   Save Expo Push Token (multi-device)
+-------------------------------------- */
 app.post("/save-token", async (req, res) => {
   try {
     const { token, userId } = req.body;
@@ -52,20 +49,21 @@ app.post("/save-token", async (req, res) => {
     await db.collection("deviceTokens").doc(userId).set(
       {
         tokens: admin.firestore.FieldValue.arrayUnion(token),
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
 
     res.json({ success: true });
   } catch (err) {
-    console.error("Error saving token:", err);
+    console.error("Save token error:", err);
     res.status(500).json({ error: "internal error" });
   }
 });
 
-// --------------------------------------
-// Send notification to ONE token (test)
-// --------------------------------------
+/* --------------------------------------
+   Send notification to ONE token (TEST)
+-------------------------------------- */
 app.post("/send-notification", async (req, res) => {
   try {
     const { title, body, token, image, data } = req.body;
@@ -81,6 +79,7 @@ app.post("/send-notification", async (req, res) => {
       sound: "default",
       title,
       body,
+      priority: "high",
       data: data || {},
     };
 
@@ -98,14 +97,14 @@ app.post("/send-notification", async (req, res) => {
     const result = await response.json();
     res.json({ success: true, result });
   } catch (err) {
-    console.error("Expo Push Error:", err);
-    res.status(500).json({ error: "failed to send expo notification" });
+    console.error("Expo push error:", err);
+    res.status(500).json({ error: "failed to send notification" });
   }
 });
 
-// --------------------------------------
-// Send notification to USER or ALL USERS
-// --------------------------------------
+/* --------------------------------------
+   Send notification to USER or ALL USERS
+-------------------------------------- */
 app.post("/send-to-user", async (req, res) => {
   try {
     const { userId, title, body, image, data } = req.body;
@@ -122,13 +121,11 @@ app.post("/send-to-user", async (req, res) => {
       const snapshot = await db.collection("deviceTokens").get();
       userDocs = snapshot.docs;
     } else {
-      const docSnap = await db.collection("deviceTokens").doc(userId).get();
-      if (!docSnap.exists) {
-        return res.status(404).json({
-          error: "No tokens found for this user",
-        });
+      const snap = await db.collection("deviceTokens").doc(userId).get();
+      if (!snap.exists) {
+        return res.status(404).json({ error: "No tokens found" });
       }
-      userDocs = [docSnap];
+      userDocs = [snap];
     }
 
     let totalTokens = 0;
@@ -147,13 +144,11 @@ app.post("/send-to-user", async (req, res) => {
             sound: "default",
             title,
             body,
-            data: data || {}, // 🔥 navigation + discount
+            priority: "high",
+            data: data || {}, // 🔥 navigation data here
           };
 
-          // 🔥 Image support (logo)
-          if (image) {
-            payload.image = image;
-          }
+          if (image) payload.image = image;
 
           const response = await fetch(
             "https://exp.host/--/api/v2/push/send",
@@ -166,23 +161,19 @@ app.post("/send-to-user", async (req, res) => {
 
           const result = await response.json();
 
-          if (result.data?.status === "error") {
+          if (result?.data?.status === "error") {
             invalidTokens.push(token);
           }
         } catch (err) {
-          console.error("Error sending to token:", token, err);
+          console.error("Send error:", token, err);
           invalidTokens.push(token);
         }
       }
 
       if (invalidTokens.length > 0) {
-        await db
-          .collection("deviceTokens")
-          .doc(userDoc.id)
-          .update({
-            tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
-          });
-
+        await db.collection("deviceTokens").doc(userDoc.id).update({
+          tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
+        });
         removedTokens += invalidTokens.length;
       }
     }
@@ -193,17 +184,15 @@ app.post("/send-to-user", async (req, res) => {
       removedTokens,
     });
   } catch (err) {
-    console.error("Error sending notifications:", err);
-    res.status(500).json({
-      error: "error sending notification",
-    });
+    console.error("Send-to-user error:", err);
+    res.status(500).json({ error: "notification failed" });
   }
 });
 
-// --------------------------------------
-// Start Server
-// --------------------------------------
+/* --------------------------------------
+   Start Server
+-------------------------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} ✔`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
