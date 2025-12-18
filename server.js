@@ -25,34 +25,34 @@ app.use(express.json());
 /* --------------------------------------
    Health Check
 -------------------------------------- */
-app.get("/health", (_, res) => {
-  res.status(200).send("OK");
-});
-
 app.get("/", (_, res) => {
-  res.send("Expo Push Notification Server Running ✔");
+  res.send("🚀 Expo Push Notification Server Running");
 });
 
 /* --------------------------------------
-   Save Expo Push Token (multi-device)
+   Validate Expo Token
+-------------------------------------- */
+const isValidExpoToken = (token) =>
+  typeof token === "string" &&
+  token.startsWith("ExponentPushToken");
+
+/* --------------------------------------
+   SAVE TOKEN (REPLACE OLD ONES)
 -------------------------------------- */
 app.post("/save-token", async (req, res) => {
   try {
     const { token, userId } = req.body;
 
-    if (!token || !userId) {
+    if (!token || !userId || !isValidExpoToken(token)) {
       return res.status(400).json({
-        error: "token and userId are required",
+        error: "Valid Expo token and userId required",
       });
     }
 
-    await db.collection("deviceTokens").doc(userId).set(
-      {
-        tokens: admin.firestore.FieldValue.arrayUnion(token),
-        updated_at: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    await db.collection("deviceTokens").doc(userId).set({
+      tokens: [token], // 🔥 REPLACE old tokens
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    });
 
     res.json({ success: true });
   } catch (err) {
@@ -62,48 +62,7 @@ app.post("/save-token", async (req, res) => {
 });
 
 /* --------------------------------------
-   Send notification to ONE token (TEST)
--------------------------------------- */
-app.post("/send-notification", async (req, res) => {
-  try {
-    const { title, body, token, image, data } = req.body;
-
-    if (!title || !body || !token) {
-      return res.status(400).json({
-        error: "title, body and token are required",
-      });
-    }
-
-    const payload = {
-      to: token,
-      sound: "default",
-      title,
-      body,
-      priority: "high",
-      data: data || {},
-    };
-
-    if (image) payload.image = image;
-
-    const response = await fetch(
-      "https://exp.host/--/api/v2/push/send",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }
-    );
-
-    const result = await response.json();
-    res.json({ success: true, result });
-  } catch (err) {
-    console.error("Expo push error:", err);
-    res.status(500).json({ error: "failed to send notification" });
-  }
-});
-
-/* --------------------------------------
-   Send notification to USER or ALL USERS
+   SEND NOTIFICATION (USER / ALL)
 -------------------------------------- */
 app.post("/send-to-user", async (req, res) => {
   try {
@@ -115,41 +74,44 @@ app.post("/send-to-user", async (req, res) => {
       });
     }
 
-    let userDocs = [];
+    let docs = [];
 
     if (userId === "all") {
-      const snapshot = await db.collection("deviceTokens").get();
-      userDocs = snapshot.docs;
+      const snap = await db.collection("deviceTokens").get();
+      docs = snap.docs;
     } else {
       const snap = await db.collection("deviceTokens").doc(userId).get();
       if (!snap.exists) {
         return res.status(404).json({ error: "No tokens found" });
       }
-      userDocs = [snap];
+      docs = [snap];
     }
 
-    let totalTokens = 0;
-    let removedTokens = 0;
+    let sent = 0;
+    let removed = 0;
 
-    for (const userDoc of userDocs) {
-      const tokens = userDoc.data().tokens || [];
-      totalTokens += tokens.length;
-
+    for (const docSnap of docs) {
+      const tokens = docSnap.data().tokens || [];
       const invalidTokens = [];
 
       for (const token of tokens) {
+        if (!isValidExpoToken(token)) {
+          invalidTokens.push(token);
+          continue;
+        }
+
+        const payload = {
+          to: token,
+          sound: "default",
+          title,
+          body,
+          priority: "high",
+          data: data || {},
+        };
+
+        if (image) payload.image = image;
+
         try {
-          const payload = {
-            to: token,
-            sound: "default",
-            title,
-            body,
-            priority: "high",
-            data: data || {}, // 🔥 navigation data here
-          };
-
-          if (image) payload.image = image;
-
           const response = await fetch(
             "https://exp.host/--/api/v2/push/send",
             {
@@ -161,36 +123,40 @@ app.post("/send-to-user", async (req, res) => {
 
           const result = await response.json();
 
-          if (result?.data?.status === "error") {
+          if (
+            result?.data?.status === "error" &&
+            result?.data?.details?.error === "DeviceNotRegistered"
+          ) {
             invalidTokens.push(token);
+          } else {
+            sent++;
           }
         } catch (err) {
-          console.error("Send error:", token, err);
           invalidTokens.push(token);
         }
       }
 
       if (invalidTokens.length > 0) {
-        await db.collection("deviceTokens").doc(userDoc.id).update({
+        await db.collection("deviceTokens").doc(docSnap.id).update({
           tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
         });
-        removedTokens += invalidTokens.length;
+        removed += invalidTokens.length;
       }
     }
 
     res.json({
       success: true,
-      totalTokens,
-      removedTokens,
+      sent,
+      removed,
     });
   } catch (err) {
-    console.error("Send-to-user error:", err);
+    console.error("Send error:", err);
     res.status(500).json({ error: "notification failed" });
   }
 });
 
 /* --------------------------------------
-   Start Server
+   START SERVER
 -------------------------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
