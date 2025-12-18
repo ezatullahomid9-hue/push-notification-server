@@ -6,6 +6,10 @@ import admin from "firebase-admin";
 /* --------------------------------------
    Firebase Admin Init
 -------------------------------------- */
+if (!process.env.SERVICE_ACCOUNT_JSON) {
+  throw new Error("SERVICE_ACCOUNT_JSON env variable missing");
+}
+
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
 admin.initializeApp({
@@ -23,10 +27,14 @@ app.use(cors());
 app.use(express.json());
 
 /* --------------------------------------
-   Health Check
+   HEALTH CHECK
 -------------------------------------- */
 app.get("/", (_, res) => {
   res.send("🚀 Expo Push Notification Server Running");
+});
+
+app.get("/health", (_, res) => {
+  res.status(200).send("OK");
 });
 
 /* --------------------------------------
@@ -37,7 +45,7 @@ const isValidExpoToken = (token) =>
   token.startsWith("ExponentPushToken");
 
 /* --------------------------------------
-   SAVE TOKEN (REPLACE OLD ONES)
+   SAVE PUSH TOKEN (REPLACE OLD)
 -------------------------------------- */
 app.post("/save-token", async (req, res) => {
   try {
@@ -49,20 +57,23 @@ app.post("/save-token", async (req, res) => {
       });
     }
 
-    await db.collection("deviceTokens").doc(userId).set({
-      tokens: [token], // 🔥 REPLACE old tokens
-      updated_at: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    await db.collection("deviceTokens").doc(userId).set(
+      {
+        tokens: [token], // ✅ replace old tokens
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
     res.json({ success: true });
   } catch (err) {
     console.error("Save token error:", err);
-    res.status(500).json({ error: "internal error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 /* --------------------------------------
-   SEND NOTIFICATION (USER / ALL)
+   SEND NOTIFICATION (USER OR ALL)
 -------------------------------------- */
 app.post("/send-to-user", async (req, res) => {
   try {
@@ -150,8 +161,8 @@ app.post("/send-to-user", async (req, res) => {
       removed,
     });
   } catch (err) {
-    console.error("Send error:", err);
-    res.status(500).json({ error: "notification failed" });
+    console.error("Send notification error:", err);
+    res.status(500).json({ error: "Notification failed" });
   }
 });
 
